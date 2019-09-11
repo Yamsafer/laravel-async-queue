@@ -2,33 +2,28 @@
 namespace Barryvdh\Queue;
 
 use Illuminate\Database\Connection;
-use Illuminate\Queue\DatabaseQueue;
-use Illuminate\Queue\Jobs\DatabaseJob;
+use Illuminate\Queue\SyncQueue;
+use Illuminate\Queue\Jobs\SyncJob;
 use Symfony\Component\Process\Process;
-use Illuminate\Queue\Jobs\DatabaseJobRecord;
 
-class AsyncQueue extends DatabaseQueue
+class AsyncQueue extends SyncQueue
 {
     /** @var string */
     protected $binary;
-    
+
     /** @var string */
     protected $binaryArgs;
-    
+
     /** @var string */
     protected $connectionName;
 
     /**
-     * @param  \Illuminate\Database\Connection  $database
-     * @param  string  $table
-     * @param  string  $default
-     * @param  int  $expire
      * @param  string  $binary
      * @param  string|array  $binaryArgs
+     * @param  string  $connectionName
      */
-    public function __construct(Connection $database, $table, $default = 'default', $expire = 60, $binary = 'php', $binaryArgs = '', $connectionName = '')
+    public function __construct($binary = 'php', $binaryArgs = '', $connectionName = '')
     {
-        parent::__construct($database, $table, $default, $expire);
         $this->binary = $binary;
         $this->binaryArgs = $binaryArgs;
         $this->connectionName = $connectionName;
@@ -45,93 +40,53 @@ class AsyncQueue extends DatabaseQueue
      */
     public function push($job, $data = '', $queue = null)
     {
-        $id = parent::push($job, $data, $queue);
-        $this->startProcess($id);
+        $payload = $this->createPayload($job, $queue, $data);
 
-        return $id;
+        $this->startProcess($payload);
+
+        return 0;
     }
-    
+
     /**
      * Push a raw payload onto the queue.
      *
      * @param  string  $payload
      * @param  string  $queue
      * @param  array   $options
-     * @return mixed
-     */
-    public function pushRaw($payload, $queue = null, array $options = [])
-    {
-        $id = parent::pushRaw($payload, $queue, $options);
-        $this->startProcess($id);
-
-        return $id;
-    }
-    
-    /**
-     * Push a new job onto the queue after a delay.
-     *
-     * @param \DateTime|int $delay
-     * @param string        $job
-     * @param mixed         $data
-     * @param string|null   $queue
      *
      * @return int
      */
-    public function later($delay, $job, $data = '', $queue = null)
+    public function pushRaw($payload, $queue = null, array $options = [])
     {
-        $id = parent::later($delay, $job, $data, $queue);
-        $this->startProcess($id);
+        $this->startProcess($payload);
 
-        return $id;
+        return 0;
     }
-    
-    /**
-     * Create an array to insert for the given job.
-     *
-     * @param  string|null  $queue
-     * @param  string  $payload
-     * @param  int  $availableAt
-     * @param  int  $attempts
-     * @return array
-     */
-    protected function buildDatabaseRecord($queue, $payload, $availableAt, $attempts = 0)
-    {
-        $record = parent::buildDatabaseRecord($queue, $payload, $availableAt, $attempts);
-        $record['reserved_at'] = $this->currentTime();
 
-        return $record;
-    }
-    
     /**
      * Get the next available job for the queue.
      *
      * @param  int $id
-     * @return DatabaseJob
+     *
+     * @return SyncJob
      */
-    public function getJobFromId($id)
+    public function getJobFromPayload($payload)
     {
-        $job = $this->database->table($this->table)
-                    ->where('id', $id)
-                    ->first();
-                    
-        if ($job) {
-            $job = $this->markJobAsReserved(new DatabaseJobRecord((object) $job));
-            return new DatabaseJob(
-                $this->container, $this, $job, $this->connectionName, $job->queue
-            );
-        }
+        return new SyncJob(
+            $this->container, $payload, $this->connectionName, 'async'
+        );
     }
-    
+
     /**
      * Make a Process for the Artisan command for the job id.
      *
-     * @param int $id
+     * @param string $payload
      *
      * @return void
      */
-    public function startProcess($id)
+    public function startProcess($payload)
     {
-        $command = $this->getCommand($id);
+        $command = $this->getCommand($payload);
         $cwd = base_path();
 
         $process = new Process($command, $cwd);
@@ -141,19 +96,23 @@ class AsyncQueue extends DatabaseQueue
     /**
      * Get the Artisan command as a string for the job id.
      *
-     * @param int $id
+     * @param string $payload
      *
      * @return string
      */
-    protected function getCommand($id)
+    protected function getCommand($payload)
     {
+        if ( ! defined('PHP_WINDOWS_VERSION_BUILD')) {
+            $payload = escapeshellarg($payload);
+        }
+
         $connection = $this->connectionName;
-        $cmd = '%s artisan queue:async %d %s';
+        $cmd = '%s artisan queue:async %s %s';
         $cmd = $this->getBackgroundCommand($cmd);
 
         $binary = $this->getPhpBinary();
 
-        return sprintf($cmd, $binary, $id, $connection);
+        return sprintf($cmd, $binary, $payload, $connection);
     }
 
     /**
@@ -176,6 +135,13 @@ class AsyncQueue extends DatabaseQueue
         return trim($path . ' ' . $args);
     }
 
+    /**
+     * Get input command but modified to run in the background
+     *
+     * @param string $cmd
+     *
+     * @return string
+     */
     protected function getBackgroundCommand($cmd)
     {
         if (defined('PHP_WINDOWS_VERSION_BUILD')) {

@@ -46,7 +46,7 @@ class AsyncServiceProvider extends ServiceProvider
     protected function registerAsyncCommand()
     {
         $this->app->singleton('command.queue.async', function () {
-             return new AsyncCommand($this->app['queue.worker']);
+            return new AsyncCommand($this->app['queue.worker']);
         });
     }
 
@@ -60,7 +60,7 @@ class AsyncServiceProvider extends ServiceProvider
     protected function registerAsyncConnector($manager)
     {
         $manager->addConnector('async', function () {
-            return new AsyncConnector($this->app['db']);
+            return new AsyncConnector;
         });
     }
 
